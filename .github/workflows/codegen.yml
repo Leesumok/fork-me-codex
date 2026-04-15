@@ -69,9 +69,12 @@ jobs:
 
       - name: Configure Git
         if: steps.auth.outputs.authorized == 'true' && steps.preflight.outcome == 'success'
+        env:
+          COMMIT_AUTHOR_NAME: ${{ github.event.sender.login }}
+          COMMIT_AUTHOR_EMAIL: ${{ github.event.sender.id }}+${{ github.event.sender.login }}@users.noreply.github.com
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name "$COMMIT_AUTHOR_NAME"
+          git config user.email "$COMMIT_AUTHOR_EMAIL"
 
       - name: Create or reuse Codex branch
         id: branch
@@ -150,31 +153,45 @@ jobs:
             --output-last-message codex-output.md \
             - < codex-prompt.md
 
-      - name: Detect file changes
-        id: changes
+      - name: Detect worktree changes
+        id: worktree
         if: steps.run_codex.outcome == 'success'
         run: |
           if [ -n "$(git status --porcelain)" ]; then
-            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "worktree_changed=true" >> "$GITHUB_OUTPUT"
           else
-            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "worktree_changed=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Commit Codex changes
-        if: steps.changes.outputs.changed == 'true'
+        if: steps.worktree.outputs.worktree_changed == 'true'
         run: |
           git add -A
           git commit -m "Implement issue #${{ github.event.issue.number }} with Codex"
 
+      - name: Detect branch diff
+        id: diff
+        if: steps.run_codex.outcome == 'success'
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          git fetch origin "+refs/heads/${DEFAULT_BRANCH}:refs/remotes/origin/${DEFAULT_BRANCH}"
+
+          if git diff --quiet "origin/${DEFAULT_BRANCH}...HEAD"; then
+            echo "branch_has_diff=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "branch_has_diff=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Push Codex branch
-        if: steps.changes.outputs.changed == 'true'
+        if: steps.worktree.outputs.worktree_changed == 'true'
         env:
           BRANCH_NAME: ${{ steps.branch.outputs.branch }}
         run: |
           git push --set-upstream origin "$BRANCH_NAME"
 
       - name: Create or update pull request
-        if: steps.changes.outputs.changed == 'true'
+        if: steps.diff.outputs.branch_has_diff == 'true'
         uses: actions/github-script@v7
         env:
           BRANCH_NAME: ${{ steps.branch.outputs.branch }}
@@ -186,7 +203,7 @@ jobs:
             const branch = process.env.BRANCH_NAME;
             const finalMessage = fs.existsSync('codex-output.md')
               ? fs.readFileSync('codex-output.md', 'utf8').trim()
-              : 'Codex completed with file changes.';
+              : 'Codex completed with branch changes available.';
 
             const prs = await github.rest.pulls.list({
               owner: context.repo.owner,
@@ -228,11 +245,11 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: issue.number,
-              body: `Codex pushed changes to \`${branch}\` and ${prs.data[0] ? 'updated' : 'opened'} PR #${pr.number}: ${pr.html_url}`,
+              body: `Codex changes are available on \`${branch}\` and ${prs.data[0] ? 'updated' : 'opened'} PR #${pr.number}: ${pr.html_url}`,
             });
 
       - name: Comment when Codex made no changes
-        if: steps.changes.outputs.changed == 'false'
+        if: steps.diff.outputs.branch_has_diff == 'false'
         uses: actions/github-script@v7
         with:
           github-token: ${{ github.token }}
@@ -250,7 +267,7 @@ jobs:
             });
 
       - name: Remove code-gen label
-        if: steps.changes.outputs.changed == 'true' || steps.changes.outputs.changed == 'false'
+        if: steps.diff.outputs.branch_has_diff == 'true' || steps.diff.outputs.branch_has_diff == 'false'
         uses: actions/github-script@v7
         with:
           github-token: ${{ github.token }}

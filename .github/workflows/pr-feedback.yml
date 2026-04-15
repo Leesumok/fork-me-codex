@@ -147,9 +147,12 @@ jobs:
 
       - name: Configure Git
         if: steps.request.outputs.requested == 'true' && steps.auth.outputs.authorized == 'true' && steps.request.outputs.can_push == 'true' && steps.preflight.outcome == 'success'
+        env:
+          COMMIT_AUTHOR_NAME: ${{ github.event.sender.login }}
+          COMMIT_AUTHOR_EMAIL: ${{ github.event.sender.id }}+${{ github.event.sender.login }}@users.noreply.github.com
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name "$COMMIT_AUTHOR_NAME"
+          git config user.email "$COMMIT_AUTHOR_EMAIL"
 
       - name: Build Codex prompt
         if: steps.request.outputs.requested == 'true' && steps.auth.outputs.authorized == 'true' && steps.request.outputs.can_push == 'true' && steps.preflight.outcome == 'success'
