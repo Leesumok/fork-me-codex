@@ -1,5 +1,7 @@
 # Fork Me Codex
 
+[한국어 README](README.ko.md)
+
 Fork this repository to get a GitHub issue-to-PR automation template powered by Codex CLI and GitHub Actions.
 
 This version is designed for a ChatGPT/Codex subscription account. It runs on a self-hosted GitHub Actions runner where Codex CLI is already logged in with OAuth. It does not require `OPENAI_API_KEY`.
