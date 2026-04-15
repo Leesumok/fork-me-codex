@@ -2,9 +2,7 @@ name: Codex issue triage
 
 on:
   issues:
-    types: [opened, labeled]
-  issue_comment:
-    types: [created]
+    types: [opened]
 
 permissions:
   contents: read
@@ -16,21 +14,7 @@ concurrency:
 
 jobs:
   triage:
-    if: >-
-      github.event.issue.pull_request == null &&
-      (
-        (
-          github.event_name == 'issues' &&
-          (
-            github.event.action == 'opened' ||
-            (github.event.action == 'labeled' && github.event.label.name == 'codex:triage')
-          )
-        ) ||
-        (
-          github.event_name == 'issue_comment' &&
-          contains(github.event.comment.body, '@codex triage')
-        )
-      )
+    if: github.event.issue.pull_request == null
     runs-on: [self-hosted, codex]
 
     steps:
@@ -101,8 +85,6 @@ jobs:
               repository: context.payload.repository.full_name,
               event: {
                 action: context.payload.action,
-                triggering_label: context.payload.label?.name ?? null,
-                triggering_comment: context.payload.comment?.body ?? '',
                 sender: context.payload.sender.login,
               },
               issue: {
@@ -134,7 +116,7 @@ jobs:
           codex exec \
             --cd "$GITHUB_WORKSPACE" \
             --ephemeral \
-            --sandbox read-only \
+            --dangerously-bypass-approvals-and-sandbox \
             --output-schema .github/codex/schemas/issue-update.schema.json \
             --output-last-message codex-output.json \
             - < codex-prompt.md

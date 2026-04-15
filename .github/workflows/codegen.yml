@@ -3,8 +3,6 @@ name: Codex code generation
 on:
   issues:
     types: [labeled]
-  issue_comment:
-    types: [created]
 
 permissions:
   contents: write
@@ -17,19 +15,7 @@ concurrency:
 
 jobs:
   codegen:
-    if: >-
-      github.event.issue.pull_request == null &&
-      (
-        (
-          github.event_name == 'issues' &&
-          github.event.action == 'labeled' &&
-          github.event.label.name == 'codex:codegen'
-        ) ||
-        (
-          github.event_name == 'issue_comment' &&
-          contains(github.event.comment.body, '@codex implement')
-        )
-      )
+    if: github.event.issue.pull_request == null && github.event.label.name == 'code-gen'
     runs-on: [self-hosted, codex]
 
     steps:
@@ -127,7 +113,6 @@ jobs:
               event: {
                 action: context.payload.action,
                 triggering_label: context.payload.label?.name ?? null,
-                triggering_comment: context.payload.comment?.body ?? '',
                 sender: context.payload.sender.login,
               },
               issue: {
@@ -161,7 +146,7 @@ jobs:
           codex exec \
             --cd "$GITHUB_WORKSPACE" \
             --ephemeral \
-            --full-auto \
+            --dangerously-bypass-approvals-and-sandbox \
             --output-last-message codex-output.md \
             - < codex-prompt.md
 
@@ -263,6 +248,23 @@ jobs:
               issue_number: context.payload.issue.number,
               body: `Codex code generation completed without file changes.\n\n${finalMessage}`,
             });
+
+      - name: Remove code-gen label
+        if: steps.changes.outputs.changed == 'true' || steps.changes.outputs.changed == 'false'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            try {
+              await github.rest.issues.removeLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.issue.number,
+                name: 'code-gen',
+              });
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
 
       - name: Report Codex failure
         if: failure() && steps.run_codex.outcome == 'failure'

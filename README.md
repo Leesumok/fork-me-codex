@@ -4,7 +4,7 @@ Fork this repository to get a GitHub issue-to-PR automation template powered by 
 
 This version is designed for a ChatGPT/Codex subscription account. It runs on a self-hosted GitHub Actions runner where Codex CLI is already logged in with OAuth. It does not require `OPENAI_API_KEY`.
 
-The easiest setup path is local Docker Compose. The runner container registers itself with your fork, stores Codex OAuth credentials in a Docker volume, and executes the `@codex ...` workflows from this repo.
+The easiest setup path is local Docker Compose. The runner container registers itself with your fork, stores Codex OAuth credentials in a Docker volume, and executes Codex workflows from this repo.
 
 ## Quick Start
 
@@ -47,44 +47,43 @@ docker compose up -d codex-runner
 
 9. Confirm the runner appears as `Idle` in `Settings > Actions > Runners`.
 10. Run the `Setup Codex labels` workflow once from the Actions tab.
-11. Create an issue and comment:
-
-```text
-@codex triage
-```
+11. Create an issue. Codex will triage new issues automatically.
 
 The value in `RUNNER_TOKEN` is a GitHub runner registration token, not a Codex OAuth token. Codex OAuth credentials are created by `codex-runner-login` and stored in the `codex-home` Docker volume.
 
 See [docs/self-hosted-runner.md](docs/self-hosted-runner.md) for details and reset instructions.
 
-## Commands
+## Workflow
 
-| Label or command | Result |
+| Action | Result |
 | --- | --- |
-| `@codex triage` | Rewrites an issue into a clearer implementation spec. |
-| `codex:triage` | Rewrites an issue into a clearer implementation spec. |
-| `@codex revise` | Revises an issue from the latest maintainer comment. |
-| `codex:revise` | Allows the next issue comment workflow run to revise the issue. |
-| `@codex implement` | Implements the issue on a `codex/issue-...` branch and opens a PR. |
-| `codex:codegen` | Implements the issue on a `codex/issue-...` branch and opens a PR. |
-| `@codex review` | Runs a workflow-based PR review and posts a comment. |
-| `codex:review` | Runs a workflow-based PR review and posts a comment. |
-| `@codex fix` | Applies PR comment or review feedback to the PR branch. |
-| `@codex apply` | Same as `@codex fix`, with wording for review suggestions. |
-| `codex:fix-pr` | Applies the latest PR feedback to the PR branch. |
+| Open an issue | Codex rewrites the issue into a clearer implementation spec. |
+| Comment `@codex ...` on an issue | Codex treats the whole comment as maintainer feedback and updates the issue. |
+| Add `code-gen` to an issue | Codex implements the issue on a `codex/issue-...` branch and opens or updates a PR. |
+| Comment `@codex ...` on a PR | Codex treats the whole comment as PR feedback and updates the PR branch. |
+| Add normal issue/PR comments without `@codex` | No Codex workflow runs. |
+
+Examples:
+
+```text
+@codex 이 이슈를 한국어로 다시 정리해줘.
+```
+
+```text
+@codex README 문장을 더 짧고 명확하게 줄여줘.
+```
 
 ## Security Model
 
 - Codex runs only for users with `write`, `maintain`, or `admin` permission on the repository.
 - Codex runs only on a self-hosted runner labeled `codex`.
-- Issue triage, issue revision, and PR review use Codex read-only sandboxing.
-- Code generation and PR feedback use Codex `--full-auto`, which keeps writes scoped to the checked-out workspace.
-- Pull requests from external forks are not modified or reviewed by OAuth-backed Codex workflows.
+- Pull requests from external forks are not modified by OAuth-backed Codex workflows.
 - This template does not auto-merge PRs.
+- In Docker runner mode, Codex runs with its internal sandbox disabled because nested bubblewrap namespaces may fail inside Docker. Treat the Docker container and the trusted-maintainer checks as the execution boundary.
 
 ## Native Codex GitHub Review
 
-OpenAI also supports native Codex GitHub review. After enabling it in Codex settings, comment `@codex review` on a PR or enable automatic reviews. This repository's workflows use the same command wording, but execute through your self-hosted runner's Codex CLI OAuth session. If native review is enabled too, disable this repo's `Codex PR review` workflow or use labels instead of `@codex review` to avoid duplicate reviews.
+OpenAI also supports native Codex GitHub review. This repository's workflows use `@codex` as a generic maintainer prompt trigger through your self-hosted runner's Codex CLI OAuth session. If native review is enabled too, avoid using this repository's generic `@codex` PR prompt for review requests unless you want both systems to react.
 
 Official references:
 

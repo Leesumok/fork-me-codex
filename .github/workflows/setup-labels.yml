@@ -15,50 +15,46 @@ jobs:
         with:
           github-token: ${{ github.token }}
           script: |
-            const labels = [
-              {
-                name: 'codex:triage',
-                color: '1f6feb',
-                description: 'Ask Codex to rewrite the issue into an actionable spec.',
-              },
-              {
-                name: 'codex:revise',
-                color: '7c3aed',
-                description: 'Ask Codex to revise the issue after maintainer feedback.',
-              },
-              {
-                name: 'codex:codegen',
-                color: '238636',
-                description: 'Ask Codex to implement the issue and open a PR.',
-              },
-              {
-                name: 'codex:fix-pr',
-                color: 'd29922',
-                description: 'Marks PR feedback that should be applied by Codex.',
-              },
-              {
-                name: 'codex:review',
-                color: 'db61a2',
-                description: 'Ask Codex to review a pull request.',
-              },
+            const activeLabel = {
+              name: 'code-gen',
+              color: '238636',
+              description: 'Ask Codex to implement the issue and open a PR.',
+            };
+            const legacyLabels = [
+              'codegen',
+              'codex:triage',
+              'codex:revise',
+              'codex:codegen',
+              'codex:fix-pr',
+              'codex:review',
             ];
 
-            for (const label of labels) {
+            try {
+              await github.rest.issues.updateLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: activeLabel.name,
+                color: activeLabel.color,
+                description: activeLabel.description,
+              });
+            } catch (error) {
+              if (error.status !== 404) throw error;
+
+              await github.rest.issues.createLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ...activeLabel,
+              });
+            }
+
+            for (const name of legacyLabels) {
               try {
-                await github.rest.issues.updateLabel({
+                await github.rest.issues.deleteLabel({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
-                  name: label.name,
-                  color: label.color,
-                  description: label.description,
+                  name,
                 });
               } catch (error) {
                 if (error.status !== 404) throw error;
-
-                await github.rest.issues.createLabel({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  ...label,
-                });
               }
             }

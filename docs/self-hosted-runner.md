@@ -55,6 +55,24 @@ Confirm the runner appears as `Idle` in GitHub. It must have the `self-hosted` a
 - `.env` must not be committed.
 - Docker volumes for this repo should be treated as sensitive because they contain the Codex login session.
 
+## Usage
+
+- Open an issue to let Codex rewrite it into an actionable spec.
+- Comment `@codex ...` on an issue to ask Codex to update the issue from that feedback.
+- Add the `code-gen` label to an issue to ask Codex to implement it and open a PR.
+- Comment `@codex ...` on a PR to ask Codex to apply that feedback to the PR branch.
+- Normal comments without `@codex` are ignored by Codex.
+
+## Sandbox Mode
+
+The Docker runner uses Codex with its internal sandbox disabled. Docker already provides the execution boundary, and nested bubblewrap namespaces can fail inside containers with:
+
+```text
+bwrap: No permissions to create a new namespace
+```
+
+Use this runner only for trusted repositories and trusted maintainers.
+
 ## Reset
 
 Stop the runner:
@@ -106,25 +124,3 @@ runs-on: [self-hosted, codex]
 - Do not run OAuth-backed Codex workflows on PR branches from external forks.
 - Keep the host patched and restrict Docker access to trusted maintainers.
 - This template never auto-merges generated PRs.
-
-## Commands
-
-Issue comments:
-
-- `@codex triage`
-- `@codex revise`
-- `@codex implement`
-
-Pull request comments:
-
-- `@codex review`
-- `@codex fix`
-- `@codex apply`
-
-Labels still work for maintainers:
-
-- `codex:triage`
-- `codex:revise`
-- `codex:codegen`
-- `codex:fix-pr`
-- `codex:review`

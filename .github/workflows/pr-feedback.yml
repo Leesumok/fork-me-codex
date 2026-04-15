@@ -1,8 +1,6 @@
 name: Codex PR feedback
 
 on:
-  pull_request:
-    types: [labeled]
   issue_comment:
     types: [created]
   pull_request_review_comment:
@@ -23,32 +21,21 @@ jobs:
   feedback:
     if: >-
       (
-        github.event_name == 'pull_request' &&
-        github.event.action == 'labeled' &&
-        github.event.label.name == 'codex:fix-pr'
-      ) ||
-      (
         github.event_name == 'issue_comment' &&
         github.event.issue.pull_request != null &&
-        (
-          contains(github.event.comment.body, '@codex fix') ||
-          contains(github.event.comment.body, '@codex apply')
-        )
+        github.event.sender.type != 'Bot' &&
+        contains(github.event.comment.body, '@codex')
       ) ||
       (
         github.event_name == 'pull_request_review_comment' &&
-        (
-          contains(github.event.comment.body, '@codex fix') ||
-          contains(github.event.comment.body, '@codex apply')
-        )
+        github.event.sender.type != 'Bot' &&
+        contains(github.event.comment.body, '@codex')
       ) ||
       (
         github.event_name == 'pull_request_review' &&
+        github.event.sender.type != 'Bot' &&
         github.event.review.body != null &&
-        (
-          contains(github.event.review.body, '@codex fix') ||
-          contains(github.event.review.body, '@codex apply')
-        )
+        contains(github.event.review.body, '@codex')
       )
     runs-on: [self-hosted, codex]
 
@@ -59,7 +46,7 @@ jobs:
         with:
           github-token: ${{ github.token }}
           script: |
-            const commandPattern = /@codex\s+(fix|apply)\b/i;
+            const commandPattern = /@codex\b/i;
             let requested = false;
             let prNumber = null;
 
@@ -68,13 +55,6 @@ jobs:
                 Boolean(context.payload.issue.pull_request) &&
                 commandPattern.test(context.payload.comment.body ?? '');
               prNumber = requested ? context.payload.issue.number : null;
-            }
-
-            if (context.eventName === 'pull_request') {
-              requested =
-                context.payload.action === 'labeled' &&
-                context.payload.label?.name === 'codex:fix-pr';
-              prNumber = requested ? context.payload.pull_request.number : null;
             }
 
             if (context.eventName === 'pull_request_review_comment') {
@@ -212,8 +192,6 @@ jobs:
             let instruction = '';
             if (context.eventName === 'issue_comment') {
               instruction = context.payload.comment.body ?? '';
-            } else if (context.eventName === 'pull_request') {
-              instruction = 'Apply the latest maintainer PR feedback because the `codex:fix-pr` label was added.';
             } else if (context.eventName === 'pull_request_review_comment') {
               instruction = context.payload.comment.body ?? '';
             } else if (context.eventName === 'pull_request_review') {
@@ -224,6 +202,7 @@ jobs:
               repository: context.payload.repository.full_name,
               event_name: context.eventName,
               instruction,
+              latest_user_prompt: instruction,
               pull_request: {
                 number: pr.number,
                 title: pr.title,
@@ -277,7 +256,7 @@ jobs:
           codex exec \
             --cd "$GITHUB_WORKSPACE" \
             --ephemeral \
-            --full-auto \
+            --dangerously-bypass-approvals-and-sandbox \
             --output-last-message codex-output.md \
             - < codex-prompt.md
 
@@ -328,17 +307,6 @@ jobs:
                 finalMessage,
               ].join('\n'),
             });
-
-            try {
-              await github.rest.issues.removeLabel({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: Number('${{ steps.request.outputs.pr_number }}'),
-                name: 'codex:fix-pr',
-              });
-            } catch (error) {
-              if (error.status !== 404) throw error;
-            }
 
       - name: Report Codex failure
         if: failure() && steps.run_codex.outcome == 'failure'
