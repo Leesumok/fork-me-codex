@@ -1,0 +1,10 @@
+.idea/
+.cache/
+node_modules/
+.env
+.env.local
+
+codex-output.*
+codex-review.*
+codex-prompt.md
+codex-context.json

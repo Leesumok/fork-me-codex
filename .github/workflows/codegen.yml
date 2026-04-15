@@ -1,0 +1,278 @@
+name: Codex code generation
+
+on:
+  issues:
+    types: [labeled]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: codegen-issue-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  codegen:
+    if: >-
+      github.event.issue.pull_request == null &&
+      (
+        (
+          github.event_name == 'issues' &&
+          github.event.action == 'labeled' &&
+          github.event.label.name == 'codex:codegen'
+        ) ||
+        (
+          github.event_name == 'issue_comment' &&
+          contains(github.event.comment.body, '@codex implement')
+        )
+      )
+    runs-on: [self-hosted, codex]
+
+    steps:
+      - name: Check trusted actor
+        id: auth
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const actor = context.payload.sender.login;
+
+            try {
+              const { data } = await github.rest.repos.getCollaboratorPermissionLevel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                username: actor,
+              });
+              const trusted = ['admin', 'maintain', 'write'].includes(data.permission);
+              core.setOutput('authorized', trusted ? 'true' : 'false');
+            } catch (error) {
+              if (error.status !== 404) throw error;
+              core.setOutput('authorized', 'false');
+            }
+
+      - name: Check Codex CLI OAuth session
+        id: preflight
+        if: steps.auth.outputs.authorized == 'true'
+        continue-on-error: true
+        run: |
+          codex --version
+          codex login status >/dev/null
+
+      - name: Report missing Codex CLI OAuth session
+        if: steps.auth.outputs.authorized == 'true' && steps.preflight.outcome == 'failure'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue.number,
+              body: 'Codex code generation could not run because the self-hosted runner is missing Codex CLI or is not logged in. Log in on the runner with `codex login --device-auth` as the runner service user.',
+            });
+
+      - name: Checkout repository
+        if: steps.auth.outputs.authorized == 'true' && steps.preflight.outcome == 'success'
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Configure Git
+        if: steps.auth.outputs.authorized == 'true' && steps.preflight.outcome == 'success'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Create or reuse Codex branch
+        id: branch
+        if: steps.auth.outputs.authorized == 'true' && steps.preflight.outcome == 'success'
+        env:
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+        run: |
+          slug=$(node -e "const title = process.argv[1] || 'issue'; const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48) || 'issue'; console.log(slug);" "$ISSUE_TITLE")
+          branch="codex/issue-${{ github.event.issue.number }}-${slug}"
+
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+            git fetch origin "$branch"
+            git switch -C "$branch" FETCH_HEAD
+          else
+            git switch -c "$branch"
+          fi
+
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+
+      - name: Build Codex prompt
+        if: steps.auth.outputs.authorized == 'true' && steps.preflight.outcome == 'success'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const fs = require('fs');
+            const issue = context.payload.issue;
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue.number,
+              per_page: 100,
+            });
+
+            const contextData = {
+              repository: context.payload.repository.full_name,
+              default_branch: context.payload.repository.default_branch,
+              working_branch: process.env.BRANCH_NAME,
+              event: {
+                action: context.payload.action,
+                triggering_label: context.payload.label?.name ?? null,
+                triggering_comment: context.payload.comment?.body ?? '',
+                sender: context.payload.sender.login,
+              },
+              issue: {
+                number: issue.number,
+                title: issue.title,
+                body: issue.body ?? '',
+                author: issue.user.login,
+                author_association: issue.author_association,
+                labels: issue.labels.map((label) => label.name),
+              },
+              recent_comments: comments.slice(-30).map((comment) => ({
+                author: comment.user.login,
+                author_association: comment.author_association,
+                body: comment.body ?? '',
+                created_at: comment.created_at,
+              })),
+            };
+
+            const template = fs.readFileSync('.github/codex/prompts/codegen.md', 'utf8');
+            fs.writeFileSync(
+              'codex-prompt.md',
+              `${template}\n\n## Event Context\n\n\`\`\`json\n${JSON.stringify(contextData, null, 2)}\n\`\`\`\n`,
+            );
+        env:
+          BRANCH_NAME: ${{ steps.branch.outputs.branch }}
+
+      - name: Run Codex
+        id: run_codex
+        if: steps.auth.outputs.authorized == 'true' && steps.preflight.outcome == 'success'
+        run: |
+          codex exec \
+            --cd "$GITHUB_WORKSPACE" \
+            --ephemeral \
+            --full-auto \
+            --output-last-message codex-output.md \
+            - < codex-prompt.md
+
+      - name: Detect file changes
+        id: changes
+        if: steps.run_codex.outcome == 'success'
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit Codex changes
+        if: steps.changes.outputs.changed == 'true'
+        run: |
+          git add -A
+          git commit -m "Implement issue #${{ github.event.issue.number }} with Codex"
+
+      - name: Push Codex branch
+        if: steps.changes.outputs.changed == 'true'
+        env:
+          BRANCH_NAME: ${{ steps.branch.outputs.branch }}
+        run: |
+          git push --set-upstream origin "$BRANCH_NAME"
+
+      - name: Create or update pull request
+        if: steps.changes.outputs.changed == 'true'
+        uses: actions/github-script@v7
+        env:
+          BRANCH_NAME: ${{ steps.branch.outputs.branch }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const fs = require('fs');
+            const issue = context.payload.issue;
+            const branch = process.env.BRANCH_NAME;
+            const finalMessage = fs.existsSync('codex-output.md')
+              ? fs.readFileSync('codex-output.md', 'utf8').trim()
+              : 'Codex completed with file changes.';
+
+            const prs = await github.rest.pulls.list({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              head: `${context.repo.owner}:${branch}`,
+            });
+
+            const body = [
+              `Closes #${issue.number}`,
+              '',
+              '## Codex result',
+              '',
+              finalMessage,
+            ].join('\n');
+
+            let pr = prs.data[0];
+            if (!pr) {
+              const created = await github.rest.pulls.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: `Codex: ${issue.title}`,
+                head: branch,
+                base: context.payload.repository.default_branch,
+                body,
+                maintainer_can_modify: true,
+              });
+              pr = created.data;
+            } else {
+              await github.rest.pulls.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: pr.number,
+                body,
+              });
+            }
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue.number,
+              body: `Codex pushed changes to \`${branch}\` and ${prs.data[0] ? 'updated' : 'opened'} PR #${pr.number}: ${pr.html_url}`,
+            });
+
+      - name: Comment when Codex made no changes
+        if: steps.changes.outputs.changed == 'false'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const fs = require('fs');
+            const finalMessage = fs.existsSync('codex-output.md')
+              ? fs.readFileSync('codex-output.md', 'utf8').trim()
+              : 'Codex completed without file changes.';
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue.number,
+              body: `Codex code generation completed without file changes.\n\n${finalMessage}`,
+            });
+
+      - name: Report Codex failure
+        if: failure() && steps.run_codex.outcome == 'failure'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue.number,
+              body: 'Codex code generation failed before it produced usable changes. Check the workflow logs for details.',
+            });

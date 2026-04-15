@@ -1,0 +1,8 @@
+.git
+.idea
+.env
+.env.local
+codex-output.*
+codex-review.*
+codex-prompt.md
+codex-context.json

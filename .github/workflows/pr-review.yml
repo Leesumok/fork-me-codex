@@ -1,0 +1,235 @@
+name: Codex PR review
+
+on:
+  pull_request:
+    types: [labeled]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: pr-review-${{ github.event.issue.number || github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    if: >-
+      (
+        github.event_name == 'pull_request' &&
+        github.event.action == 'labeled' &&
+        github.event.label.name == 'codex:review'
+      ) ||
+      (
+        github.event_name == 'issue_comment' &&
+        github.event.issue.pull_request != null &&
+        contains(github.event.comment.body, '@codex review')
+      )
+    runs-on: [self-hosted, codex]
+
+    steps:
+      - name: Resolve PR review request
+        id: request
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            let requested = false;
+            let prNumber = null;
+
+            if (context.eventName === 'pull_request') {
+              requested =
+                context.payload.action === 'labeled' &&
+                context.payload.label?.name === 'codex:review';
+              prNumber = requested ? context.payload.pull_request.number : null;
+            }
+
+            if (context.eventName === 'issue_comment') {
+              requested =
+                Boolean(context.payload.issue.pull_request) &&
+                /@codex\s+review\b/i.test(context.payload.comment.body ?? '');
+              prNumber = requested ? context.payload.issue.number : null;
+            }
+
+            core.setOutput('requested', requested ? 'true' : 'false');
+            if (!requested) return;
+
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+            });
+
+            const sameRepo = pr.head.repo.full_name === context.payload.repository.full_name;
+            core.setOutput('pr_number', String(pr.number));
+            core.setOutput('base_ref', pr.base.ref);
+            core.setOutput('head_ref', pr.head.ref);
+            core.setOutput('head_repo', pr.head.repo.full_name);
+            core.setOutput('same_repo', sameRepo ? 'true' : 'false');
+
+      - name: Check trusted actor
+        id: auth
+        if: steps.request.outputs.requested == 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const actor = context.payload.sender.login;
+
+            try {
+              const { data } = await github.rest.repos.getCollaboratorPermissionLevel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                username: actor,
+              });
+              const trusted = ['admin', 'maintain', 'write'].includes(data.permission);
+              core.setOutput('authorized', trusted ? 'true' : 'false');
+            } catch (error) {
+              if (error.status !== 404) throw error;
+              core.setOutput('authorized', 'false');
+            }
+
+      - name: Report unsupported fork PR
+        if: steps.request.outputs.requested == 'true' && steps.auth.outputs.authorized == 'true' && steps.request.outputs.same_repo != 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: Number('${{ steps.request.outputs.pr_number }}'),
+              body: 'Codex PR review was not run because this PR branch is from an external fork. For safety, OAuth-backed Codex workflows only run on branches in the base repository.',
+            });
+
+      - name: Check Codex CLI OAuth session
+        id: preflight
+        if: steps.request.outputs.requested == 'true' && steps.auth.outputs.authorized == 'true' && steps.request.outputs.same_repo == 'true'
+        continue-on-error: true
+        run: |
+          codex --version
+          codex login status >/dev/null
+
+      - name: Report missing Codex CLI OAuth session
+        if: steps.request.outputs.requested == 'true' && steps.auth.outputs.authorized == 'true' && steps.request.outputs.same_repo == 'true' && steps.preflight.outcome == 'failure'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: Number('${{ steps.request.outputs.pr_number }}'),
+              body: 'Codex PR review could not run because the self-hosted runner is missing Codex CLI or is not logged in. Log in on the runner with `codex login --device-auth` as the runner service user.',
+            });
+
+      - name: Checkout PR merge ref
+        if: steps.request.outputs.requested == 'true' && steps.auth.outputs.authorized == 'true' && steps.request.outputs.same_repo == 'true' && steps.preflight.outcome == 'success'
+        uses: actions/checkout@v5
+        with:
+          ref: refs/pull/${{ steps.request.outputs.pr_number }}/merge
+          fetch-depth: 0
+
+      - name: Fetch PR refs
+        if: steps.request.outputs.requested == 'true' && steps.auth.outputs.authorized == 'true' && steps.request.outputs.same_repo == 'true' && steps.preflight.outcome == 'success'
+        run: |
+          git fetch --no-tags origin "${{ steps.request.outputs.base_ref }}"
+          git fetch --no-tags origin "+refs/pull/${{ steps.request.outputs.pr_number }}/head"
+
+      - name: Build Codex prompt
+        if: steps.request.outputs.requested == 'true' && steps.auth.outputs.authorized == 'true' && steps.request.outputs.same_repo == 'true' && steps.preflight.outcome == 'success'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const fs = require('fs');
+            const prNumber = Number(process.env.PR_NUMBER);
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+            });
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+              per_page: 100,
+            });
+
+            const contextData = {
+              repository: context.payload.repository.full_name,
+              event_name: context.eventName,
+              request_comment:
+                context.eventName === 'issue_comment' ? context.payload.comment.body ?? '' : '',
+              pull_request: {
+                number: pr.number,
+                title: pr.title,
+                body: pr.body ?? '',
+                state: pr.state,
+                base_ref: pr.base.ref,
+                head_ref: pr.head.ref,
+                head_sha: pr.head.sha,
+                author: pr.user.login,
+              },
+              changed_files: files.slice(0, 100).map((file) => ({
+                filename: file.filename,
+                status: file.status,
+                additions: file.additions,
+                deletions: file.deletions,
+                changes: file.changes,
+                patch: file.patch ?? '',
+              })),
+            };
+
+            const template = fs.readFileSync('.github/codex/prompts/pr-review.md', 'utf8');
+            fs.writeFileSync(
+              'codex-prompt.md',
+              `${template}\n\n## Event Context\n\n\`\`\`json\n${JSON.stringify(contextData, null, 2)}\n\`\`\`\n`,
+            );
+        env:
+          PR_NUMBER: ${{ steps.request.outputs.pr_number }}
+
+      - name: Run Codex
+        id: run_codex
+        if: steps.request.outputs.requested == 'true' && steps.auth.outputs.authorized == 'true' && steps.request.outputs.same_repo == 'true' && steps.preflight.outcome == 'success'
+        run: |
+          codex exec \
+            --cd "$GITHUB_WORKSPACE" \
+            --ephemeral \
+            --sandbox read-only \
+            --output-last-message codex-review.md \
+            - < codex-prompt.md
+
+      - name: Post PR review comment
+        if: steps.run_codex.outcome == 'success'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const fs = require('fs');
+            const review = fs.existsSync('codex-review.md')
+              ? fs.readFileSync('codex-review.md', 'utf8').trim()
+              : 'Codex completed without a saved review file.';
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: Number('${{ steps.request.outputs.pr_number }}'),
+              body: `### Codex PR review\n\n${review}`,
+            });
+
+      - name: Report Codex failure
+        if: failure() && steps.run_codex.outcome == 'failure'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: Number('${{ steps.request.outputs.pr_number }}'),
+              body: 'Codex PR review failed before it produced a usable review. Check the workflow logs for details.',
+            });

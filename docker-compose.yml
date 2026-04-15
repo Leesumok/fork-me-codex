@@ -1,0 +1,42 @@
+services:
+  codex-runner:
+    build:
+      context: .
+      dockerfile: docker/codex-runner/Dockerfile
+      args:
+        RUNNER_VERSION: ${RUNNER_VERSION:-latest}
+    environment:
+      GITHUB_REPOSITORY: ${GITHUB_REPOSITORY:?Set GITHUB_REPOSITORY in .env}
+      RUNNER_TOKEN: ${RUNNER_TOKEN:-}
+      RUNNER_NAME: ${RUNNER_NAME:-codex-local}
+      RUNNER_LABELS: ${RUNNER_LABELS:-codex}
+    volumes:
+      - codex-home:/home/runner/.codex
+      - runner-config:/home/runner/actions-runner
+      - runner-work:/home/runner/actions-runner/_work
+    restart: unless-stopped
+
+  codex-runner-login:
+    build:
+      context: .
+      dockerfile: docker/codex-runner/Dockerfile
+      args:
+        RUNNER_VERSION: ${RUNNER_VERSION:-latest}
+    entrypoint: ["/bin/bash", "-lc"]
+    command: ["codex login --device-auth && codex login status"]
+    stdin_open: true
+    tty: true
+    environment:
+      GITHUB_REPOSITORY: ${GITHUB_REPOSITORY:?Set GITHUB_REPOSITORY in .env}
+      RUNNER_TOKEN: ${RUNNER_TOKEN:-}
+      RUNNER_NAME: ${RUNNER_NAME:-codex-local}
+      RUNNER_LABELS: ${RUNNER_LABELS:-codex}
+    volumes:
+      - codex-home:/home/runner/.codex
+    profiles:
+      - setup
+
+volumes:
+  codex-home:
+  runner-config:
+  runner-work:

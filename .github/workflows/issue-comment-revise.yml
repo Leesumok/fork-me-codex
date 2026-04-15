@@ -1,0 +1,203 @@
+name: Codex issue comment revise
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: issue-revise-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  revise:
+    if: >-
+      github.event.issue.pull_request == null &&
+      (
+        contains(github.event.comment.body, '@codex revise') ||
+        contains(toJSON(github.event.issue.labels), 'codex:revise')
+      )
+    runs-on: [self-hosted, codex]
+
+    steps:
+      - name: Check trusted actor
+        id: auth
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const actor = context.payload.sender.login;
+
+            try {
+              const { data } = await github.rest.repos.getCollaboratorPermissionLevel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                username: actor,
+              });
+              const trusted = ['admin', 'maintain', 'write'].includes(data.permission);
+              core.setOutput('authorized', trusted ? 'true' : 'false');
+            } catch (error) {
+              if (error.status !== 404) throw error;
+              core.setOutput('authorized', 'false');
+            }
+
+      - name: Resolve revise request
+        id: request
+        if: steps.auth.outputs.authorized == 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const issue = context.payload.issue;
+            const labels = issue.labels.map((label) => label.name);
+            const body = context.payload.comment.body ?? '';
+            const requested = /@codex\s+revise\b/i.test(body) || labels.includes('codex:revise');
+            core.setOutput('requested', requested ? 'true' : 'false');
+
+      - name: Check Codex CLI OAuth session
+        id: preflight
+        if: steps.auth.outputs.authorized == 'true' && steps.request.outputs.requested == 'true'
+        continue-on-error: true
+        run: |
+          codex --version
+          codex login status >/dev/null
+
+      - name: Report missing Codex CLI OAuth session
+        if: steps.auth.outputs.authorized == 'true' && steps.request.outputs.requested == 'true' && steps.preflight.outcome == 'failure'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue.number,
+              body: 'Codex issue revision could not run because the self-hosted runner is missing Codex CLI or is not logged in. Log in on the runner with `codex login --device-auth` as the runner service user.',
+            });
+
+      - name: Checkout repository
+        if: steps.auth.outputs.authorized == 'true' && steps.request.outputs.requested == 'true' && steps.preflight.outcome == 'success'
+        uses: actions/checkout@v5
+
+      - name: Build Codex prompt
+        if: steps.auth.outputs.authorized == 'true' && steps.request.outputs.requested == 'true' && steps.preflight.outcome == 'success'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const fs = require('fs');
+            const issue = context.payload.issue;
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue.number,
+              per_page: 100,
+            });
+
+            const contextData = {
+              repository: context.payload.repository.full_name,
+              event: {
+                action: context.payload.action,
+                sender: context.payload.sender.login,
+                triggering_comment: context.payload.comment.body ?? '',
+              },
+              issue: {
+                number: issue.number,
+                title: issue.title,
+                body: issue.body ?? '',
+                author: issue.user.login,
+                author_association: issue.author_association,
+                labels: issue.labels.map((label) => label.name),
+              },
+              recent_comments: comments.slice(-30).map((comment) => ({
+                author: comment.user.login,
+                author_association: comment.author_association,
+                body: comment.body ?? '',
+                created_at: comment.created_at,
+              })),
+            };
+
+            const template = fs.readFileSync('.github/codex/prompts/issue-revise.md', 'utf8');
+            fs.writeFileSync(
+              'codex-prompt.md',
+              `${template}\n\n## Event Context\n\n\`\`\`json\n${JSON.stringify(contextData, null, 2)}\n\`\`\`\n`,
+            );
+
+      - name: Run Codex
+        id: run_codex
+        if: steps.auth.outputs.authorized == 'true' && steps.request.outputs.requested == 'true' && steps.preflight.outcome == 'success'
+        run: |
+          codex exec \
+            --cd "$GITHUB_WORKSPACE" \
+            --ephemeral \
+            --sandbox read-only \
+            --output-schema .github/codex/schemas/issue-update.schema.json \
+            --output-last-message codex-output.json \
+            - < codex-prompt.md
+
+      - name: Apply issue revision
+        if: steps.run_codex.outcome == 'success'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const fs = require('fs');
+
+            try {
+              const raw = fs.readFileSync('codex-output.json', 'utf8').trim();
+              const result = JSON.parse(raw);
+
+              if (!result.title?.trim() || !result.body?.trim() || !result.summary_comment?.trim()) {
+                throw new Error('Codex output was missing title, body, or summary_comment.');
+              }
+
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.issue.number,
+                title: result.title.trim(),
+                body: result.body.trim(),
+              });
+
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.issue.number,
+                body: `### Codex issue revision\n\n${result.summary_comment.trim()}`,
+              });
+
+              try {
+                await github.rest.issues.removeLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.payload.issue.number,
+                  name: 'codex:revise',
+                });
+              } catch (error) {
+                if (error.status !== 404) throw error;
+              }
+            } catch (error) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.issue.number,
+                body: `Codex issue revision failed while applying the generated update: ${error.message}`,
+              });
+              throw error;
+            }
+
+      - name: Report Codex failure
+        if: failure() && steps.run_codex.outcome == 'failure'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue.number,
+              body: 'Codex issue revision failed before it produced a usable issue update. Check the workflow logs for details.',
+            });
