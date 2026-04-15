@@ -8,18 +8,18 @@
 
 가장 쉬운 설정 방법은 로컬 Docker Compose를 사용하는 것입니다. runner container는 fork한 저장소에 직접 등록되고, Codex OAuth credentials를 Docker volume에 저장하며, 이 저장소의 Codex workflows를 실행합니다.
 
-## Quick Start
+## 빠른 시작
 
 1. 이 저장소를 fork합니다.
 2. fork한 저장소에서 `Settings > Actions > Runners > New self-hosted runner`를 엽니다.
-3. GitHub 설정 명령에 포함된 short-lived runner registration token을 복사합니다.
-4. 예시 파일에서 `.env`를 만듭니다.
+3. GitHub의 setup command에서 short-lived runner registration token을 복사합니다.
+4. 예시 파일을 사용해 `.env`를 만듭니다.
 
 ```bash
 cp .env.example .env
 ```
 
-5. `.env`를 수정합니다.
+5. `.env`를 편집합니다.
 
 ```dotenv
 GITHUB_REPOSITORY=your-user/your-fork
@@ -55,17 +55,17 @@ docker compose up -d codex-runner
 
 자세한 내용과 reset 방법은 [docs/self-hosted-runner.md](docs/self-hosted-runner.md)를 참고하세요.
 
-## Workflow
+## 작업 흐름
 
-| Action | Result |
+| 동작 | 결과 |
 | --- | --- |
 | issue 열기 | Codex가 issue를 더 명확한 implementation spec으로 다시 작성합니다. |
 | issue에 `@codex ...` comment 작성 | Codex가 comment 전체를 maintainer feedback으로 처리하고 issue를 업데이트합니다. |
-| issue에 `code-gen` 추가 | Codex가 `codex/issue-...` branch에서 issue를 구현하고 PR을 열거나 업데이트합니다. |
+| issue에 `code-gen` label 추가 | Codex가 `codex/issue-...` branch에서 issue를 구현하고 PR을 열거나 업데이트합니다. |
 | PR에 `@codex ...` comment 작성 | Codex가 comment 전체를 PR feedback으로 처리하고 PR branch를 업데이트합니다. |
 | `@codex` 없는 일반 issue/PR comment 추가 | Codex workflow가 실행되지 않습니다. |
 
-Examples:
+예시:
 
 ```text
 @codex 이 이슈를 한국어로 다시 정리해줘.
@@ -75,7 +75,7 @@ Examples:
 @codex README 문장을 더 짧고 명확하게 줄여줘.
 ```
 
-## Security Model
+## 보안 모델
 
 - Codex는 repository에 `write`, `maintain`, 또는 `admin` permission이 있는 사용자에 대해서만 실행됩니다.
 - Codex는 `codex` label이 지정된 self-hosted runner에서만 실행됩니다.
@@ -87,7 +87,7 @@ Examples:
 
 OpenAI는 native Codex GitHub review도 지원합니다. 이 저장소의 workflows는 self-hosted runner의 Codex CLI OAuth session을 통해 `@codex`를 일반적인 maintainer prompt trigger로 사용합니다. native review도 활성화되어 있다면 두 시스템이 모두 반응하기를 원하는 경우가 아니라면 review request에 이 저장소의 일반 `@codex` PR prompt를 사용하지 마세요.
 
-Official references:
+공식 참고 자료:
 
 - https://developers.openai.com/codex/cli
 - https://developers.openai.com/codex/github-action
